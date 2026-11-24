@@ -44,6 +44,7 @@ next-env.d.ts
 
 # Docs
 docs/*.md
+docs/*.json
 !docs/PROJECT_CONTEXT.md
 
 # AI Assistant artifacts

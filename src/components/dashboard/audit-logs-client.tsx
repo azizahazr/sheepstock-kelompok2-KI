@@ -1,16 +1,34 @@
 'use client'
 
 import { useState, useTransition } from "react"
-import { ShieldAlert, ArrowLeft, Clock, User as UserIcon, RotateCcw, AlertTriangle } from "lucide-react"
+import { ShieldAlert, ShieldCheck, ArrowLeft, Clock, User as UserIcon, RotateCcw, AlertTriangle } from "lucide-react"
 import Link from "next/link"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { restoreCheckpoint } from "@/app/actions/audit"
+import { restoreCheckpoint, verifyAuditLogChain, type AuditChainVerificationResult } from "@/app/actions/audit"
 
 export function AuditLogsClient({ logs }: { logs: any[] }) {
     const [isPending, startTransition] = useTransition()
+    const [isVerifyingChain, setIsVerifyingChain] = useState(false)
+    const [chainResult, setChainResult] = useState<AuditChainVerificationResult | null>(null)
     const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean, logId: string, message: string } | null>(null)
     const [errorDialog, setErrorDialog] = useState<{ isOpen: boolean, title: string, message: string } | null>(null)
     const [successDialog, setSuccessDialog] = useState<{ isOpen: boolean, title: string, message: string } | null>(null)
+
+    const handleVerifyChain = async () => {
+        try {
+            setIsVerifyingChain(true)
+            const res = await verifyAuditLogChain()
+            setChainResult(res)
+        } catch (error: any) {
+            setErrorDialog({
+                isOpen: true,
+                title: "Gagal Memverifikasi Rantai Log",
+                message: error.message || "Terjadi kesalahan saat verifikasi."
+            })
+        } finally {
+            setIsVerifyingChain(false)
+        }
+    }
 
     const handleRestore = (logId: string) => {
         setConfirmDialog(null)
@@ -50,12 +68,32 @@ export function AuditLogsClient({ logs }: { logs: any[] }) {
 
             <div className="flex-1 overflow-y-auto p-4 sm:p-8">
                 <div className="max-w-6xl mx-auto space-y-6">
-                    <div>
-                        <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100">Audit Trail & Checkpoint</h2>
-                        <p className="text-sm font-medium text-slate-500 mt-1">
-                            Merekam 100 aktivitas terakhir. Fitur <span className="font-bold text-amber-500">Restore</span> memungkinkan Anda untuk membatalkan perubahan data.
-                        </p>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                            <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100">Audit Trail & Checkpoint</h2>
+                            <p className="text-sm font-medium text-slate-500 mt-1">
+                                Merekam 100 aktivitas terakhir dengan <span className="font-bold text-emerald-600">SHA-256 Hash Chain & RSA-PSS</span>. Fitur <span className="font-bold text-amber-500">Restore</span> memungkinkan pembatalan perubahan data.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handleVerifyChain}
+                            disabled={isVerifyingChain}
+                            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-colors disabled:opacity-50 shrink-0 cursor-pointer"
+                        >
+                            <ShieldCheck className="w-4 h-4" />
+                            {isVerifyingChain ? "Memverifikasi Rantai..." : "Cek Integritas Audit Log"}
+                        </button>
                     </div>
+
+                    {chainResult && (
+                        <div className={`p-4 rounded-2xl border flex items-start gap-3 ${chainResult.isValid ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-300' : 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950/40 dark:border-rose-800 dark:text-rose-300'}`}>
+                            {chainResult.isValid ? <ShieldCheck className="w-5 h-5 shrink-0 mt-0.5" /> : <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />}
+                            <div className="text-xs space-y-1">
+                                <p className="font-bold text-sm">{chainResult.isValid ? "Rantai Audit Log Valid (Tamper-Evident OK)" : "Terdeteksi Manipulasi Log (Tampering Alert)"}</p>
+                                <p>{chainResult.message}</p>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-sm">
                         {/* Mobile Card View */}

@@ -3,9 +3,87 @@
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { createAuditLog } from "@/lib/audit";
+import { requireAuth } from "@/lib/auth-guard";
+import { decryptFieldSafe, encryptField, signPayload, verifyPayloadSignature } from "@/lib/crypto";
+
+function buildHarvestSigningPayload(params: {
+    livestock_id: string;
+    customer_name: string;
+    selling_price: number;
+    live_weight: number;
+    carcass_weight: number | null;
+    harvest_type: string;
+    harvest_date: string;
+    signed_by: string;
+}) {
+    return {
+        livestock_id: params.livestock_id,
+        customer_name: params.customer_name,
+        selling_price: Number(params.selling_price),
+        live_weight: Number(params.live_weight),
+        carcass_weight: params.carcass_weight !== null && params.carcass_weight !== undefined ? Number(params.carcass_weight) : null,
+        harvest_type: params.harvest_type,
+        harvest_date: new Date(params.harvest_date).toISOString(),
+        signed_by: params.signed_by,
+    };
+}
+
+/**
+ * Verifikasi Tanda Tangan Digital (RSA-2048-PSS) secara real-time untuk satu transaksi panen.
+ * Menjamin Non-Repudiation & mendeteksi tampering pada harga jual, berat, atau nama pembeli di DB.
+ */
+export async function verifyHarvestRecordSignature(recordId: string) {
+    const ctx = await requireAuth();
+    const supabase = await createClient();
+
+    let query = supabase
+        .from("harvest_records")
+        .select("id, livestock_id, customer_name, selling_price, live_weight, carcass_weight, harvest_type, harvest_date, digital_signature, signature_payload_hash, signed_by, signed_at, user_id")
+        .eq("id", recordId);
+
+    if (ctx.role !== "admin") {
+        query = query.eq("user_id", ctx.effectiveUserId);
+    }
+
+    const { data: record, error } = await query.single();
+
+    if (error || !record) {
+        return { valid: false, status: "NOT_FOUND", message: "Transaksi tidak ditemukan atau akses ditolak." };
+    }
+
+    if (!record.digital_signature || !record.signed_by) {
+        return { valid: false, status: "UNSIGNED", message: "Transaksi legacy (belum memiliki tanda tangan digital)." };
+    }
+
+    const decryptedCustomer = decryptFieldSafe(record.customer_name, "harvest_records:customer_name");
+    const payload = buildHarvestSigningPayload({
+        livestock_id: record.livestock_id,
+        customer_name: decryptedCustomer,
+        selling_price: record.selling_price,
+        live_weight: record.live_weight,
+        carcass_weight: record.carcass_weight,
+        harvest_type: record.harvest_type,
+        harvest_date: record.harvest_date,
+        signed_by: record.signed_by,
+    });
+
+    const isValid = verifyPayloadSignature(payload, record.digital_signature);
+
+    return {
+        valid: isValid,
+        status: isValid ? "VALID" : "TAMPERED",
+        payloadHash: record.signature_payload_hash,
+        signedAt: record.signed_at,
+        message: isValid
+            ? "Tanda tangan digital RSA-2048-PSS VALID. Data transaksi asli dan tidak pernah dimodifikasi."
+            : "PERINGATAN TAMPERING: Tanda tangan digital TIDAK COCOK! Data harga, berat, atau pembeli telah berubah di database.",
+    };
+}
 
 export async function processHarvest(formData: FormData) {
+    const ctx = await requireAuth();
     const supabase = await createClient();
+    const effectiveUserId = ctx.effectiveUserId;
 
     const customerName = formData.get("customer_name") as string;
     const harvestType = formData.get("harvest_type") as string || "potong";
@@ -76,37 +154,63 @@ export async function processHarvest(formData: FormData) {
         carcassPhotoUrl = publicUrlData.publicUrl;
     }
 
-    // Fetch all livestock information (to get their cage_ids for occupancy updates)
+    // Fetch all livestock information (strict tenant isolation: filter user_id)
     const idsToFetch = livestockData.map(l => l.id);
     const { data: livestocks, error: fetchError } = await supabase
         .from('livestocks')
         .select('id, cage_id')
+        .eq('user_id', effectiveUserId)
         .in('id', idsToFetch);
     
     if (fetchError || !livestocks || livestocks.length === 0) {
-        throw new Error("Gagal memverifikasi ternak dari database.");
+        throw new Error("Gagal memverifikasi ternak dari database atau ternak bukan milik peternakan Anda.");
     }
 
     // Process each livestock individually
     for (const data of livestockData) {
+        if (!Number.isFinite(data.price) || data.price < 0 || !Number.isFinite(data.weight) || data.weight <= 0) {
+            throw new Error("Nilai harga jual dan berat ternak harus berupa angka valid.");
+        }
         const livestock = livestocks.find(l => l.id === data.id);
         if (!livestock) continue; // Skip if not found
 
-        // 1. Insert HarvestRecord
+        // 1. Insert HarvestRecord (Enkripsi AES-256-GCM + Tanda Tangan Digital RSA-2048-PSS)
+        const harvestDateIso = new Date().toISOString();
+        const encryptedCustomerName = encryptField(customerName, "harvest_records:customer_name");
+        const finalCarcassWeight = carcassWeight !== null && harvestType === 'potong' ? carcassWeight : null;
+
+        const signingPayload = buildHarvestSigningPayload({
+            livestock_id: data.id,
+            customer_name: customerName,
+            selling_price: data.price,
+            live_weight: data.weight,
+            carcass_weight: finalCarcassWeight,
+            harvest_type: harvestType,
+            harvest_date: harvestDateIso,
+            signed_by: ctx.userId,
+        });
+        const { signature, payloadHash } = signPayload(signingPayload);
+
         const recordPayload: any = {
             livestock_id: data.id,
             live_weight: data.weight, // from frontend calculation (borongan or satuan)
-            customer_name: customerName,
+            customer_name: encryptedCustomerName,
             selling_price: data.price, // from frontend calculation (borongan or satuan)
-            harvest_date: new Date().toISOString(),
+            harvest_date: harvestDateIso,
             status: 'completed',
             live_photo_url: livePhotoUrl,
             carcass_photo_url: carcassPhotoUrl,
-            harvest_type: harvestType
+            harvest_type: harvestType,
+            user_id: effectiveUserId,
+            is_encrypted: true,
+            digital_signature: signature,
+            signature_payload_hash: payloadHash,
+            signed_by: ctx.userId,
+            signed_at: harvestDateIso,
         };
 
-        if (carcassWeight !== null && harvestType === 'potong') {
-            recordPayload.carcass_weight = carcassWeight;
+        if (finalCarcassWeight !== null) {
+            recordPayload.carcass_weight = finalCarcassWeight;
         }
 
         const { error: insertError } = await supabase

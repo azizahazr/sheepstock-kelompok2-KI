@@ -3,6 +3,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getEffectiveUserId } from "@/app/actions/users"
+import { encryptField } from "@/lib/crypto"
+import { requireRole } from "@/lib/auth-guard"
+import { createAuditLog } from "@/lib/audit"
 
 export async function addHealthRecord(formData: FormData) {
     const supabase = await createClient()
@@ -23,17 +26,18 @@ export async function addHealthRecord(formData: FormData) {
 
     const effectiveUserId = await getEffectiveUserId()
 
-    // Insert health record
+    // Insert health record (Enkripsi Data at Rest AES-256-GCM)
     const { error: insertError } = await supabase.from("health_records").insert({
         livestock_id,
         date,
-        illness_description,
-        treatment,
+        illness_description: encryptField(illness_description, "health_records:illness_description"),
+        treatment: encryptField(treatment, "health_records:treatment"),
         item_used_id: item_used_id || null,
         medicine_qty: medicine_qty || null,
         status,
         recorded_by: user.id,
-        user_id: effectiveUserId
+        user_id: effectiveUserId,
+        is_encrypted: true,
     })
 
     if (insertError) {
@@ -118,33 +122,21 @@ export async function addHealthRecord(formData: FormData) {
 
 export async function deleteHealthRecord(id: string) {
     try {
+        // RBAC ketat: hanya owner atau admin yang boleh menghapus rekam medis (tidak lagi bypass RLS untuk staff)
+        const ctx = await requireRole(["owner", "admin"])
         const supabase = await createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return { error: "Unauthorized" }
 
-        const effectiveUserId = await getEffectiveUserId()
-        
-        const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-        if (!serviceRoleKey) {
-            return { error: "Konfigurasi server tidak lengkap (Service Role Key hilang)" }
-        }
-
-        // Gunakan admin client untuk bypass RLS yang tidak memiliki policy DELETE
-        const { createClient: createSupabaseClient } = await import('@supabase/supabase-js')
-        const adminSupabase = createSupabaseClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            serviceRoleKey
-        )
-
-        const { error } = await adminSupabase
+        const { error } = await supabase
             .from("health_records")
             .delete()
             .eq("id", id)
-            .eq("user_id", effectiveUserId)
+            .eq("user_id", ctx.effectiveUserId)
 
         if (error) {
             return { error: error.message }
         }
+
+        await createAuditLog("DELETE", "health_records", `Menghapus rekam medis ID: ${id}`, id)
 
         revalidatePath("/health")
         revalidatePath("/dashboard")
@@ -225,17 +217,18 @@ export async function updateHealthRecord(id: string, formData: FormData) {
         }
     }
 
-    // Update health record
+    // Update health record (Enkripsi Data at Rest AES-256-GCM)
     const { error: updateError } = await supabase
         .from("health_records")
         .update({
             date,
-            illness_description,
-            treatment,
+            illness_description: encryptField(illness_description, "health_records:illness_description"),
+            treatment: encryptField(treatment, "health_records:treatment"),
             status,
             item_used_id: new_item_used_id || null,
             medicine_qty: new_medicine_qty || null,
             resolved_at: status === "selesai" ? (resolved_at || new Date().toISOString()) : null,
+            is_encrypted: true,
         })
         .eq("id", id)
         .eq("user_id", effectiveUserId)

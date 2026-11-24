@@ -1,9 +1,9 @@
 "use client"
 
 import { useState, useRef, useMemo, useEffect } from "react"
-import { Scissors, Search, AlertCircle, TrendingUp, CheckCircle2, X, Calendar, Camera, Image, Eye, History, Truck, QrCode, Settings, CheckSquare, Square } from "lucide-react"
+import { Scissors, Search, AlertCircle, TrendingUp, CheckCircle2, X, Calendar, Camera, Image, Eye, History, Truck, QrCode, Settings, CheckSquare, Square, ShieldCheck, ShieldAlert } from "lucide-react"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { processHarvest } from "@/app/actions/harvest"
+import { processHarvest, verifyHarvestRecordSignature } from "@/app/actions/harvest"
 import { UserDropdown } from "@/components/dashboard/user-dropdown"
 import dynamic from "next/dynamic"
 
@@ -56,6 +56,35 @@ export function HarvestClient({
     const [confirmDialog, setConfirmDialog] = useState<{isOpen: boolean, title: string, message: string, onConfirm: () => void} | null>(null)
     const [errorDialog, setErrorDialog] = useState<{isOpen: boolean, title: string, message: string} | null>(null)
     const [successDialog, setSuccessDialog] = useState<{isOpen: boolean, title: string, message: string} | null>(null)
+    const [verifyingId, setVerifyingId] = useState<string | null>(null)
+
+    const handleVerifySignature = async (recordId: string) => {
+        try {
+            setVerifyingId(recordId)
+            const res = await verifyHarvestRecordSignature(recordId)
+            if (res.valid) {
+                setSuccessDialog({
+                    isOpen: true,
+                    title: "Tanda Tangan Digital Valid (RSA-PSS)",
+                    message: `${res.message}\n\nSHA-256 Hash:\n${res.payloadHash || '-'}`
+                })
+            } else {
+                setErrorDialog({
+                    isOpen: true,
+                    title: res.status === "TAMPERED" ? "Deteksi Manipulasi Data (TAMPERED)" : "Belum Ditandatangani",
+                    message: res.message
+                })
+            }
+        } catch (err: any) {
+            setErrorDialog({
+                isOpen: true,
+                title: "Gagal Memverifikasi",
+                message: err.message || "Terjadi kesalahan saat verifikasi tanda tangan digital."
+            })
+        } finally {
+            setVerifyingId(null)
+        }
+    }
 
     // Form inputs state
     const [harvestType, setHarvestType] = useState<'potong' | 'jual_hidup'>('potong')
@@ -694,7 +723,18 @@ export function HarvestClient({
                                             </div>
                                             <span className="font-mono font-bold text-xs text-slate-700 dark:text-slate-300">Rp {r.selling_price.toLocaleString('id-ID')}</span>
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            {r.signature_valid === true ? (
+                                                <button onClick={() => handleVerifySignature(r.id)} disabled={verifyingId === r.id} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-100 dark:bg-emerald-950/60 text-[10px] text-emerald-700 dark:text-emerald-400 font-bold cursor-pointer border border-emerald-500/20">
+                                                    <ShieldCheck className="w-3 h-3" /> {verifyingId === r.id ? 'Cek...' : 'RSA-PSS Valid'}
+                                                </button>
+                                            ) : r.signature_valid === false ? (
+                                                <button onClick={() => handleVerifySignature(r.id)} disabled={verifyingId === r.id} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-100 dark:bg-rose-950/60 text-[10px] text-rose-700 dark:text-rose-400 font-bold cursor-pointer border border-rose-500/30">
+                                                    <ShieldAlert className="w-3 h-3" /> TAMPERED
+                                                </button>
+                                            ) : (
+                                                <span className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-500 font-semibold">Legacy</span>
+                                            )}
                                             {r.live_photo_url && (
                                                 <button onClick={() => setPhotoPreview({ url: r.live_photo_url, title: `Bukti Hidup - ${r.livestocks?.qr_code}` })} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/40 text-[10px] text-emerald-700 dark:text-emerald-400 font-bold cursor-pointer border border-emerald-500/10"><Eye className="w-3 h-3" /> Hidup</button>
                                             )}
@@ -717,12 +757,13 @@ export function HarvestClient({
                                         <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-500">{activeTab === 'riwayat_potong' ? 'Berat (H / K)' : 'Berat Hidup'}</th>
                                         <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-500">Harga Jual</th>
                                         <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-center">Status</th>
+                                        <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-center">Integritas (RSA-PSS)</th>
                                         <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-center">Foto Bukti</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-emerald-500/5">
                                     {filteredRiwayat.length === 0 ? (
-                                        <tr><td colSpan={7} className="text-center py-10 text-slate-500 font-medium text-sm">Belum ada riwayat transaksi untuk kategori ini.</td></tr>
+                                        <tr><td colSpan={8} className="text-center py-10 text-slate-500 font-medium text-sm">Belum ada riwayat transaksi untuk kategori ini.</td></tr>
                                     ) : filteredRiwayat.map((r) => {
                                         const d = new Date(r.harvest_date)
                                         const isJualHidup = r.harvest_type === 'jual_hidup';
@@ -738,6 +779,30 @@ export function HarvestClient({
                                                 <td className="px-5 py-4 font-mono font-bold text-xs text-slate-700 dark:text-slate-300">Rp {r.selling_price.toLocaleString('id-ID')}</td>
                                                 <td className="px-5 py-4 text-center">
                                                     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-800">Selesai</span>
+                                                </td>
+                                                <td className="px-5 py-4 text-center">
+                                                    {r.signature_valid === true ? (
+                                                        <button
+                                                            onClick={() => handleVerifySignature(r.id)}
+                                                            disabled={verifyingId === r.id}
+                                                            title="Klik untuk verifikasi tanda tangan digital secara live"
+                                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-100 hover:bg-emerald-200 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-400 dark:border-emerald-800 transition-colors cursor-pointer"
+                                                        >
+                                                            <ShieldCheck className="w-3.5 h-3.5" />
+                                                            {verifyingId === r.id ? 'Cek...' : 'Terverifikasi'}
+                                                        </button>
+                                                    ) : r.signature_valid === false ? (
+                                                        <button
+                                                            onClick={() => handleVerifySignature(r.id)}
+                                                            disabled={verifyingId === r.id}
+                                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-100 hover:bg-rose-200 text-rose-700 border border-rose-300 dark:bg-rose-900/40 dark:text-rose-400 dark:border-rose-800 transition-colors cursor-pointer"
+                                                        >
+                                                            <ShieldAlert className="w-3.5 h-3.5" />
+                                                            TAMPERED
+                                                        </button>
+                                                    ) : (
+                                                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400">Legacy</span>
+                                                    )}
                                                 </td>
                                                 <td className="px-5 py-4">
                                                     <div className="flex items-center justify-center gap-2">

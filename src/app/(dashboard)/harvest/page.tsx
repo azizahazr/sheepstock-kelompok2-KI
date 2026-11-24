@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { HarvestClient } from "@/components/dashboard/harvest-client"
+import { decryptFieldSafe, verifyPayloadSignature } from "@/lib/crypto"
 
 export const dynamic = 'force-dynamic'
 
@@ -29,8 +30,8 @@ export default async function HarvestPage() {
         .not("status", "eq", "dead")
         .order("current_weight", { ascending: false });
 
-    // Fetch harvest history
-    const { data: harvestHistory } = await supabase
+    // Fetch harvest history & dekripsi field sensitif (AES-256-GCM)
+    const { data: rawHarvestHistory } = await supabase
         .from("harvest_records")
         .select(`
             *,
@@ -38,10 +39,35 @@ export default async function HarvestPage() {
         `)
         .order("harvest_date", { ascending: false });
 
+    const harvestHistory = (rawHarvestHistory || []).map((record: any) => {
+        const decryptedCustomer = decryptFieldSafe(record.customer_name, "harvest_records:customer_name");
+        let signature_valid: boolean | null = null;
+        if (record.digital_signature && record.signed_by) {
+            signature_valid = verifyPayloadSignature(
+                {
+                    livestock_id: record.livestock_id,
+                    customer_name: decryptedCustomer,
+                    selling_price: Number(record.selling_price),
+                    live_weight: Number(record.live_weight),
+                    carcass_weight: record.carcass_weight !== null && record.carcass_weight !== undefined ? Number(record.carcass_weight) : null,
+                    harvest_type: record.harvest_type,
+                    harvest_date: new Date(record.harvest_date).toISOString(),
+                    signed_by: record.signed_by,
+                },
+                record.digital_signature
+            );
+        }
+        return {
+            ...record,
+            customer_name: decryptedCustomer,
+            signature_valid,
+        };
+    });
+
     return (
         <HarvestClient
             allActiveLivestock={allActiveLivestock || []}
-            harvestHistory={harvestHistory || []}
+            harvestHistory={harvestHistory}
             avatarUrl={avatarUrl}
             userName={userName}
         />

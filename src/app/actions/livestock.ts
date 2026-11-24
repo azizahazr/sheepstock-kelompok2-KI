@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { createAuditLog } from "@/lib/audit"
 import { getEffectiveUserId } from "@/app/actions/users"
+import { encryptField } from "@/lib/crypto"
 
 export async function addLivestock(formData: FormData) {
     const supabase = await createClient()
@@ -125,13 +126,14 @@ export async function updateLivestock(id: string, formData: FormData) {
             const { error: insertErr } = await supabase.from("health_records").insert({
                 livestock_id: id,
                 date: new Date().toISOString().split('T')[0],
-                illness_description: illness,
-                treatment,
+                illness_description: encryptField(illness, "health_records:illness_description"),
+                treatment: encryptField(treatment || "", "health_records:treatment"),
                 item_used_id: medicine_id || null,
                 medicine_qty: isNaN(medicine_qty) ? null : medicine_qty,
                 status: health_status,
                 recorded_by: user.id,
-                user_id: effectiveUserId
+                user_id: effectiveUserId,
+                is_encrypted: true,
             });
 
             if (insertErr) {

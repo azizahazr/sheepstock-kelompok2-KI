@@ -15,6 +15,7 @@ import { HelpDropdown } from "@/components/dashboard/help-dropdown";
 import { GrowthChart } from "@/components/dashboard/growth-chart";
 import { HarvestChart } from "@/components/dashboard/harvest-chart";
 import { IllnessChart } from "@/components/dashboard/illness-chart";
+import { decryptFieldSafe } from "@/lib/crypto";
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0; // Force no-cache on the entire dashboard route
@@ -138,12 +139,12 @@ export default async function Dashboard() {
     });
   }
 
-  // Health records
+  // Health records (dekripsi AES-256-GCM)
   for (const hr of (recentHealth || [])) {
     const statusLabel = hr.status === 'selesai' ? 'Sembuh' : hr.status === 'karantina' ? 'Karantina' : 'Pemulihan';
     activities.push({
       title: `${statusLabel}: ${(hr.livestocks as any)?.qr_code || 'Ternak'}`,
-      desc: hr.illness_description,
+      desc: decryptFieldSafe(hr.illness_description, "health_records:illness_description"),
       time: new Date(hr.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' }),
       color: hr.status === 'selesai' ? "bg-emerald-100 dark:bg-emerald-950 text-emerald-600" : "bg-amber-100 dark:bg-amber-950 text-amber-600",
       icon: <Syringe className="w-4 h-4" />,
@@ -167,13 +168,13 @@ export default async function Dashboard() {
   const recentActivities = activities.sort((a, b) => b.ts - a.ts).slice(0, 8);
 
   // --- Data for New Charts ---
-  // 1. Illness Data
+  // 1. Illness Data (dekripsi AES-256-GCM)
   const { data: allHealth } = await supabase.from("health_records").select("illness_description").in("status", ["karantina", "pemulihan", "selesai"]);
   const illnessCounts: Record<string, number> = {};
   if (allHealth) {
     allHealth.forEach(record => {
       if (record.illness_description) {
-        const desc = record.illness_description.trim();
+        const desc = decryptFieldSafe(record.illness_description, "health_records:illness_description").trim();
         illnessCounts[desc] = (illnessCounts[desc] || 0) + 1;
       }
     });

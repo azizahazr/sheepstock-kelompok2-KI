@@ -1,10 +1,11 @@
 "use client"
 
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { Settings, User, Bell, LogOut, PenSquare } from "lucide-react"
+import { Settings, User, Bell, LogOut, PenSquare, ShieldCheck, KeyRound } from "lucide-react"
 import { useState, useEffect } from "react"
 import { logout } from "@/app/actions/auth"
 import { createClient } from "@/lib/supabase/client"
+import { getSecurityStatus, setSecurityPin, verifyUserSecurityPin } from "@/app/actions/security"
 
 export default function SettingsPage() {
     const [stockNotif, setStockNotif] = useState(true);
@@ -43,6 +44,54 @@ export default function SettingsPage() {
     // Dialog states
     const [errorDialog, setErrorDialog] = useState<{ isOpen: boolean, title: string, message: string } | null>(null);
     const [successDialog, setSuccessDialog] = useState<{ isOpen: boolean, title: string, message: string } | null>(null);
+
+    // Security & AAA state
+    const [securityInfo, setSecurityInfo] = useState<{
+        hasSecurityPin: boolean;
+        keyManagement: {
+            keyId: string;
+            algorithm: string;
+            signatureAlgorithm: string;
+            hashAlgorithm: string;
+            publicKeyFingerprint: string;
+            isConfigured: boolean;
+        };
+    } | null>(null);
+    const [newPin, setNewPin] = useState("");
+    const [testPin, setTestPin] = useState("");
+    const [isSavingPin, setIsSavingPin] = useState(false);
+
+    useEffect(() => {
+        getSecurityStatus()
+            .then((res) => setSecurityInfo(res))
+            .catch(() => {});
+    }, []);
+
+    const handleSavePin = async () => {
+        setIsSavingPin(true);
+        try {
+            const res = await setSecurityPin(newPin);
+            if (res.error) {
+                setErrorDialog({ isOpen: true, title: "Gagal Menyimpan PIN", message: res.error });
+            } else {
+                setNewPin("");
+                setSecurityInfo((prev) => prev ? { ...prev, hasSecurityPin: true } : prev);
+                setSuccessDialog({ isOpen: true, title: "Security PIN Tersimpan", message: "PIN berhasil di-hash menggunakan PBKDF2-HMAC-SHA256 + 128-bit Random Salt." });
+            }
+        } finally {
+            setIsSavingPin(false);
+        }
+    };
+
+    const handleTestPin = async () => {
+        const res = await verifyUserSecurityPin(testPin);
+        setTestPin("");
+        if (res.valid) {
+            setSuccessDialog({ isOpen: true, title: "PIN Cocok (Valid)", message: "Verifikasi PBKDF2-HMAC-SHA256 berhasil." });
+        } else {
+            setErrorDialog({ isOpen: true, title: "Verifikasi Gagal", message: res.error || "PIN tidak cocok." });
+        }
+    };
 
     useEffect(() => {
         const fetchUser = async () => {
@@ -307,6 +356,98 @@ export default function SettingsPage() {
                                     >
                                         <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 ease-in-out shadow-sm ${vaccineNotif ? 'translate-x-7' : 'translate-x-1'}`}></div>
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Security & AAA Protocol Section */}
+                        <div className="bg-white/40 dark:bg-slate-900/40 backdrop-blur-xl border border-emerald-500/20 rounded-3xl shadow-lg overflow-hidden glass-card">
+                            <div className="p-4 sm:p-6 border-b border-emerald-500/10 flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                    <ShieldCheck className="text-emerald-500 w-5 h-5" />
+                                    <div>
+                                        <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">Keamanan & Protokol AAA</h3>
+                                        <p className="text-sm text-slate-500">Status Enkripsi (AES-256-GCM), Key Management (RSA-2048), & Security PIN (PBKDF2+Salt).</p>
+                                    </div>
+                                </div>
+                                <span className={`px-3 py-1 rounded-full text-xs font-bold ${securityInfo?.keyManagement.isConfigured ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' : 'bg-amber-100 text-amber-700'}`}>
+                                    {securityInfo?.keyManagement.isConfigured ? 'AAA Aktif' : 'Memuat...'}
+                                </span>
+                            </div>
+
+                            <div className="p-4 sm:p-6 space-y-5">
+                                {securityInfo && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                                        <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60">
+                                            <span className="text-slate-500 block font-semibold">Key ID & Fingerprint</span>
+                                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{securityInfo.keyManagement.keyId}</span>
+                                        </div>
+                                        <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60">
+                                            <span className="text-slate-500 block font-semibold">Data at Rest & Envelope</span>
+                                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{securityInfo.keyManagement.algorithm}</span>
+                                        </div>
+                                        <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60">
+                                            <span className="text-slate-500 block font-semibold">Digital Signature</span>
+                                            <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{securityInfo.keyManagement.signatureAlgorithm}</span>
+                                        </div>
+                                        <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/60 dark:border-slate-700/60">
+                                            <span className="text-slate-500 block font-semibold">Status Security PIN</span>
+                                            <span className={`font-bold ${securityInfo.hasSecurityPin ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'}`}>
+                                                {securityInfo.hasSecurityPin ? 'Terpasang (PBKDF2 + Random Salt)' : 'Belum Diatur'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="pt-2 border-t border-slate-200/60 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                                            <KeyRound className="w-3.5 h-3.5 text-emerald-500" />
+                                            Atur / Ganti Security PIN (6 Digit)
+                                        </label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="password"
+                                                inputMode="numeric"
+                                                maxLength={6}
+                                                value={newPin}
+                                                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                                placeholder="6 digit angka"
+                                                className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm outline-none"
+                                            />
+                                            <button
+                                                onClick={handleSavePin}
+                                                disabled={isSavingPin || newPin.length !== 6}
+                                                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
+                                            >
+                                                {isSavingPin ? 'Simpan...' : 'Simpan PIN'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {securityInfo?.hasSecurityPin && (
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block">Uji Verifikasi Security PIN</label>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="password"
+                                                    inputMode="numeric"
+                                                    maxLength={6}
+                                                    value={testPin}
+                                                    onChange={(e) => setTestPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                                    placeholder="Masukkan PIN"
+                                                    className="flex-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm outline-none"
+                                                />
+                                                <button
+                                                    onClick={handleTestPin}
+                                                    disabled={testPin.length !== 6}
+                                                    className="px-4 py-2 bg-slate-800 hover:bg-slate-900 dark:bg-slate-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 cursor-pointer"
+                                                >
+                                                    Verifikasi
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>

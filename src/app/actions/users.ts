@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { createAuditLog } from '@/lib/audit'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
+import { encryptField, decryptFieldSafe } from '@/lib/crypto'
 
 // Type definition for Profile
 export type UserProfile = {
@@ -104,7 +105,11 @@ export async function getAllProfiles(): Promise<UserProfile[]> {
         }
     }
 
-    return profiles;
+    // Dekripsi kolom sensitif (phone) menggunakan AES-256-GCM sebelum dikirim ke UI
+    return profiles.map((p: any) => ({
+        ...p,
+        phone: p.phone ? decryptFieldSafe(p.phone, 'profiles:phone') : null,
+    }));
 }
 
 export async function updateUserRole(targetUserId: string, newRole: string) {
@@ -125,6 +130,14 @@ export async function updateUserRole(targetUserId: string, newRole: string) {
 
     if (targetUserId === user.id) {
         throw new Error("Anda tidak dapat mengubah role Anda sendiri.")
+    }
+
+    // Validasi whitelist role (cegah privilege escalation: owner tidak boleh menaikkan staff jadi admin/owner)
+    const allowedRolesForOwner = ['staff', 'inactive']
+    const allowedRolesForAdmin = ['owner', 'admin', 'staff', 'inactive']
+    const allowed = currentUserProfile?.role === 'admin' ? allowedRolesForAdmin : allowedRolesForOwner
+    if (!allowed.includes(newRole)) {
+        throw new Error(`Otorisasi ditolak: Peran '${newRole}' tidak diizinkan untuk ditetapkan oleh akun Anda.`)
     }
 
     // Ambil data sebelum update untuk log audit
@@ -193,8 +206,8 @@ export async function deleteUserProfile(targetUserId: string) {
         .eq('id', targetUserId)
         .single()
 
-    // Jika owner, pastikan target adalah staff milik owner tersebut atau profil tanpa owner (orphan)
-    if (currentUserProfile?.role === 'owner' && oldProfile?.owner_id !== null && oldProfile?.owner_id !== user.id) {
+    // Jika owner, pastikan target benar-benar staf milik owner tersebut (cegah penghapusan profil lintas tenant/orphan)
+    if (currentUserProfile?.role === 'owner' && oldProfile?.owner_id !== user.id) {
         throw new Error("Anda hanya dapat menghapus staf peternakan Anda sendiri.")
     }
 
@@ -280,12 +293,14 @@ export async function createStaffAccount(
         throw new Error(msg)
     }
 
-    // Update profil untuk nama lengkap dan nomor telepon
+    // Update profil untuk nama lengkap dan nomor telepon (terenkripsi AES-256-GCM)
+    const encryptedPhone = phone ? encryptField(phone, 'profiles:phone') : null
     const { error: profileError } = await supabase
         .from('profiles')
         .update({
             name: name,
-            phone: phone || null
+            phone: encryptedPhone,
+            phone_encrypted: Boolean(encryptedPhone),
         })
         .eq('id', data.user.id)
 

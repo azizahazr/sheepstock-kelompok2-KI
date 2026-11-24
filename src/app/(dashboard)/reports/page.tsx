@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import ReportsClient from "@/components/reports/reports-client";
 import type { LivestockRow, HealthRow, GrowthRow, HarvestRow } from "@/components/reports/reports-client";
+import { decryptFieldSafe } from "@/lib/crypto";
 
 export const dynamic = 'force-dynamic';
 
@@ -61,8 +62,8 @@ export default async function ReportsPage() {
   const healthData: HealthRow[] = (rawHealth || []).map((h: any) => ({
     qr_code: h.livestocks?.qr_code || '-',
     date: h.date,
-    illness_description: h.illness_description,
-    treatment: h.treatment,
+    illness_description: decryptFieldSafe(h.illness_description, "health_records:illness_description"),
+    treatment: decryptFieldSafe(h.treatment, "health_records:treatment"),
     status: h.status || '-',
     recorded_by_name: h.profiles?.name || '-',
   }));
@@ -100,7 +101,7 @@ export default async function ReportsPage() {
     live_weight: h.live_weight,
     carcass_weight: h.carcass_weight,
     selling_price: h.selling_price,
-    customer_name: h.customer_name,
+    customer_name: decryptFieldSafe(h.customer_name, "harvest_records:customer_name"),
     harvest_date: h.harvest_date,
   }));
 

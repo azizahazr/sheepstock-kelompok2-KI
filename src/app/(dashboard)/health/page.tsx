@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { HealthClient } from "@/components/dashboard/health-client"
+import { decryptFieldSafe } from "@/lib/crypto"
 
 export const dynamic = 'force-dynamic'
 
@@ -18,8 +19,8 @@ export default async function HealthPage() {
         if (user.user_metadata?.avatar_url) avatarUrl = user.user_metadata.avatar_url;
     }
 
-    // Fetch health records joined with livestock and items
-    const { data: records } = await supabase
+    // Fetch health records joined with livestock and items & dekripsi AES-256-GCM
+    const { data: rawRecords } = await supabase
         .from("health_records")
         .select(`
       *,
@@ -27,6 +28,12 @@ export default async function HealthPage() {
       inventory_items ( name, unit )
     `)
         .order('date', { ascending: false })
+
+    const records = (rawRecords || []).map((r: any) => ({
+        ...r,
+        illness_description: decryptFieldSafe(r.illness_description, "health_records:illness_description"),
+        treatment: decryptFieldSafe(r.treatment, "health_records:treatment"),
+    }))
 
     // Fetch all livestocks with cage_id for filtering
     const { data: livestocks } = await supabase
